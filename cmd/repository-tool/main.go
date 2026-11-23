@@ -29,6 +29,9 @@ func run() error {
 		if err := manifest.Validate(&m); err != nil {
 			return err
 		}
+		if err := manifest.ValidateCatalogPresentation(&m, m.GetPresentation().GetSourceUrl()); err != nil {
+			return err
+		}
 		return json.NewEncoder(os.Stdout).Encode(&m)
 	}
 	raw, err := os.ReadFile(os.Args[1])
@@ -55,6 +58,9 @@ func run() error {
 			return fmt.Errorf("missing manifest")
 		}
 		if err := manifest.Validate(p.Manifest); err != nil {
+			return err
+		}
+		if err := manifest.ValidateCatalogPresentation(p.Manifest, p.Manifest.GetPresentation().GetSourceUrl()); err != nil {
 			return err
 		}
 		for _, platform := range p.Manifest.SupportedPlatforms {

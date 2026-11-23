@@ -1,9 +1,18 @@
-FROM python:3.13-slim
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-WORKDIR /app
-COPY silo_tracearr ./silo_tracearr
-USER 65532:65532
-EXPOSE 8097
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s \
-  CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.getenv('BRIDGE_PORT','8097')+'/health/live',timeout=3)" || exit 1
-CMD ["python", "-m", "silo_tracearr"]
+FROM golang:1.26 AS build
+ENV GOWORK=off
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    go test -race ./... && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/tracearr-bridge-linux-amd64 .
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/repository-tool ./cmd/repository-tool
+RUN /out/tracearr-bridge-linux-amd64 manifest | /out/repository-tool manifest > /out/manifest.json
+COPY LICENSE /out/LICENSE
+WORKDIR /out
+RUN sha256sum tracearr-bridge-linux-amd64 > SHA256SUMS
+
+FROM scratch AS artifact
+COPY --from=build /out/ /

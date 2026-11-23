@@ -1,0 +1,113 @@
+{
+  "plugin_id": "community.buzzromain.tracearr-bridge",
+  "version": "0.4.0",
+  "checksum": "__CHECKSUM__",
+  "silo_api_version": "v1",
+  "supported_platforms": [
+    {
+      "os": "linux",
+      "arch": "amd64"
+    }
+  ],
+  "category": "Monitoring",
+  "presentation": {
+    "display_name": "Tracearr Bridge",
+    "summary": "Connect Tracearr to Silo through a focused Jellyfin-compatible bridge.",
+    "description_markdown": "Tracearr Bridge exposes Silo sessions, users, libraries, media metadata, artwork, watch history, and stream termination to Tracearr as a Jellyfin-compatible server. It implements only the routes Tracearr needs. This fork preserves the original project's MIT attribution.",
+    "setup_markdown": "1. Install the plugin and open **Tracearr Bridge** settings.\n2. Set the native Silo API URL, an administrator-owned Silo API key, a separate bridge API key, and a listener address.\n3. Expose the listener port to Tracearr and enable the listener task at Silo startup.\n4. Add the listener to Tracearr as a Jellyfin server and use the bridge API key.",
+    "homepage_url": "https://github.com/buzzromain/silo-tracearr-bridge",
+    "source_url": "https://github.com/buzzromain/silo-tracearr-bridge",
+    "support_url": "https://github.com/buzzromain/silo-tracearr-bridge/issues",
+    "changelog_url": "https://github.com/buzzromain/silo-tracearr-bridge/releases",
+    "publisher_name": "buzzromain",
+    "publisher_url": "https://github.com/buzzromain",
+    "license_spdx": "MIT"
+  },
+  "metadata": {
+    "configuration_check": true
+  },
+  "capabilities": [
+    {
+      "type": "http_routes.v1",
+      "id": "diagnostics",
+      "display_name": "Bridge status"
+    },
+    {
+      "type": "scheduled_task.v1",
+      "id": "listener",
+      "display_name": "Start and check Tracearr listener",
+      "description": "Start the listener at Silo startup and verify its local health."
+    }
+  ],
+  "http_routes": [
+    {
+      "id": "status",
+      "method": "GET",
+      "path": "/status",
+      "access": "admin"
+    },
+    {
+      "id": "diagnostics-page",
+      "method": "GET",
+      "path": "/diagnostics",
+      "access": "admin",
+      "navigable": true,
+      "navigation_label": "Tracearr Bridge",
+      "navigation_kind": "admin"
+    }
+  ],
+  "global_config_schema": [
+    {
+      "key": "bridge",
+      "title": "Bridge settings",
+      "description": "Connection and listener settings for the Tracearr bridge.",
+      "required": true,
+      "json_schema": "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"silo_url\",\"silo_api_key\",\"bridge_api_key\",\"listen_address\",\"server_name\"],\"properties\":{\"silo_url\":{\"type\":\"string\",\"minLength\":1},\"silo_api_key\":{\"type\":\"string\",\"minLength\":1},\"bridge_api_key\":{\"type\":\"string\",\"minLength\":1},\"listen_address\":{\"type\":\"string\",\"minLength\":1},\"server_name\":{\"type\":\"string\",\"minLength\":1}}}",
+      "admin_form": {
+        "submit_label": "Save Bridge settings",
+        "fields": [
+          {
+            "key": "silo_url",
+            "label": "Native Silo API URL",
+            "description": "The native API URL as seen from the Silo process, normally http://127.0.0.1:8080.",
+            "control": "ADMIN_FORM_CONTROL_TEXT",
+            "default_value": "http://127.0.0.1:8080",
+            "required": true
+          },
+          {
+            "key": "silo_api_key",
+            "label": "Silo administrator API key",
+            "description": "Administrator-owned key used by the plugin to read monitoring data and control sessions.",
+            "control": "ADMIN_FORM_CONTROL_PASSWORD",
+            "secret": true,
+            "required": true
+          },
+          {
+            "key": "bridge_api_key",
+            "label": "Tracearr bridge API key",
+            "description": "Separate token Tracearr uses to authenticate to this plugin's listener.",
+            "control": "ADMIN_FORM_CONTROL_PASSWORD",
+            "secret": true,
+            "required": true
+          },
+          {
+            "key": "listen_address",
+            "label": "Listener address",
+            "description": "Address bound by the Jellyfin-compatible listener.",
+            "control": "ADMIN_FORM_CONTROL_TEXT",
+            "default_value": "0.0.0.0:8098",
+            "required": true
+          },
+          {
+            "key": "server_name",
+            "label": "Server name",
+            "description": "Name shown by Tracearr for this Silo server.",
+            "control": "ADMIN_FORM_CONTROL_TEXT",
+            "default_value": "Silo (Tracearr bridge)",
+            "required": true
+          }
+        ]
+      }
+    }
+  ]
+}

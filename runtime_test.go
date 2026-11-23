@@ -19,11 +19,23 @@ import (
 )
 
 func TestManifestPassesHostValidation(t *testing.T) {
+	var raw struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(manifest, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw.Version != version {
+		t.Fatalf("manifest version %q does not match binary version %q", raw.Version, version)
+	}
 	m, err := publicmanifest.LoadWithChecksum(manifest, version)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := publicmanifest.Validate(m); err != nil {
+		t.Fatal(err)
+	}
+	if err := publicmanifest.ValidateCatalogPresentation(m, "https://github.com/buzzromain/silo-tracearr-bridge"); err != nil {
 		t.Fatal(err)
 	}
 }

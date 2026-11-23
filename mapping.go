@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+const seasonContentIDPrefix = "silo-season:"
+
 func str(v any) string {
 	if v == nil {
 		return ""
@@ -51,17 +53,15 @@ func clean(m object) object {
 	return m
 }
 func rid(kind string, v any) string {
-	return kind + "-" + base64.RawURLEncoding.EncodeToString([]byte(str(v)))
+	// Tracearr treats Jellyfin IDs as opaque strings. Preserve Silo's native
+	// identifiers so a future native Tracearr integration can reuse them.
+	return str(v)
 }
 func decodeID(kind, value string) (string, error) {
-	if !strings.HasPrefix(value, kind+"-") {
+	if strings.TrimSpace(value) == "" || strings.Contains(value, "/") {
 		return "", fail(400, "invalid resource ID")
 	}
-	raw, e := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(value, kind+"-"))
-	if e != nil || len(raw) == 0 || rid(kind, string(raw)) != value {
-		return "", fail(400, "invalid resource ID")
-	}
-	return string(raw), nil
+	return value, nil
 }
 func first(vs ...any) any {
 	for _, v := range vs {
@@ -134,8 +134,124 @@ func mapItem(r object) object {
 	if str(r["series_id"]) != "" {
 		seriesID = rid("item", r["series_id"])
 	}
-	kind := map[string]string{"movie": "Movie", "series": "Series", "episode": "Episode"}[str(r["type"])]
-	return clean(object{"Id": rid("item", r["content_id"]), "Name": r["title"], "Type": kind, "IsFolder": kind == "Series", "LocationType": "FileSystem", "ProductionYear": r["year"], "DateCreated": r["added_at"], "MediaSources": sources, "ProviderIds": clean(object{"Tmdb": r["tmdb_id"], "Tvdb": r["tvdb_id"], "Imdb": r["imdb_id"]}), "SeriesId": seriesID, "SeriesName": r["series_title"], "ParentIndexNumber": r["season_number"], "IndexNumber": r["episode_number"]})
+	kind := map[string]string{"movie": "Movie", "series": "Series", "episode": "Episode", "season": "Season"}[str(r["type"])]
+	id := rid("item", r["content_id"])
+	item := clean(object{
+		"Id": id, "Name": r["title"], "Type": kind,
+		"IsFolder": kind == "Series" || kind == "Season", "LocationType": "FileSystem",
+		"ProductionYear": r["year"], "DateCreated": r["added_at"], "Path": r["path"],
+		"Genres": r["genres"], "MediaSources": sources,
+		"ProviderIds": clean(object{"Tmdb": r["tmdb_id"], "Tvdb": r["tvdb_id"], "Imdb": r["imdb_id"]}),
+		"SeriesId":    seriesID, "SeriesName": r["series_title"],
+		"ParentIndexNumber": r["season_number"], "IndexNumber": r["episode_number"],
+	})
+	if kind == "Episode" && seriesID != "" && r["season_number"] != nil {
+		season := int(num(r["season_number"]))
+		item["SeasonId"] = seasonID(str(r["series_id"]), season)
+		item["SeasonName"] = seasonName(season)
+		item["ParentId"] = item["SeasonId"]
+	}
+	if kind == "Season" {
+		item["ParentId"] = seriesID
+		item["IndexNumber"] = r["season_number"]
+		delete(item, "ParentIndexNumber")
+	}
+	return item
+}
+
+// seasonContentID makes a stable local identity from the Silo episode hierarchy.
+// Silo's catalog lists episodes but has no standalone season records.
+func seasonContentID(seriesID string, season int) string {
+	encodedSeriesID := base64.RawURLEncoding.EncodeToString([]byte(seriesID))
+	return fmt.Sprintf("%s%s:%d", seasonContentIDPrefix, encodedSeriesID, season)
+}
+
+func seasonID(seriesID string, season int) string {
+	return seasonContentID(seriesID, season)
+}
+
+func seasonName(season int) string {
+	if season == 0 {
+		return "Specials"
+	}
+	return fmt.Sprintf("Season %d", season)
+}
+
+func seasonItem(seriesID, seriesName string, season int, libraries []any) object {
+	return object{
+		"content_id": seasonContentID(seriesID, season), "type": "season",
+		"title": seasonName(season), "series_id": seriesID, "series_title": seriesName,
+		"season_number": season, "library_ids": libraries,
+	}
+}
+
+func seasonItems(catalog []object) []object {
+	seasons := map[string]object{}
+	for _, item := range catalog {
+		seriesID := str(item["series_id"])
+		if str(item["type"]) != "episode" || seriesID == "" || item["season_number"] == nil {
+			continue
+		}
+		seasonNumber := int(num(item["season_number"]))
+		id := seasonContentID(seriesID, seasonNumber)
+		season, ok := seasons[id]
+		if !ok {
+			season = seasonItem(seriesID, str(item["series_title"]), seasonNumber, []any{})
+			seasons[id] = season
+		}
+		libraries := season["library_ids"].([]any)
+		for _, libraryID := range anySlice(item["library_ids"]) {
+			if !contains(season["library_ids"], str(libraryID)) {
+				libraries = append(libraries, libraryID)
+			}
+		}
+		season["library_ids"] = libraries
+	}
+	result := make([]object, 0, len(seasons))
+	for _, season := range seasons {
+		result = append(result, season)
+	}
+	return result
+}
+
+func anySlice(value any) []any {
+	items, _ := value.([]any)
+	return items
+}
+
+func matchesItemParent(item object, parentKind, parent string, recursive bool) bool {
+	if parent == "" {
+		return true
+	}
+	if parentKind == "library" {
+		return contains(item["library_ids"], parent)
+	}
+	if seriesID, seasonNumber, isSeason := seasonParent(parent); isSeason {
+		return str(item["type"]) == "episode" && str(item["series_id"]) == seriesID && int(num(item["season_number"])) == seasonNumber
+	}
+	if str(item["type"]) == "season" {
+		return str(item["series_id"]) == parent
+	}
+	return recursive && str(item["type"]) == "episode" && str(item["series_id"]) == parent
+}
+
+func seasonParent(contentID string) (seriesID string, season int, ok bool) {
+	if !strings.HasPrefix(contentID, seasonContentIDPrefix) {
+		return "", 0, false
+	}
+	parts := strings.Split(strings.TrimPrefix(contentID, seasonContentIDPrefix), ":")
+	if len(parts) != 2 {
+		return "", 0, false
+	}
+	decodedSeries, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil || len(decodedSeries) == 0 {
+		return "", 0, false
+	}
+	season, err = strconv.Atoi(parts[1])
+	if err != nil || season < 0 {
+		return "", 0, false
+	}
+	return string(decodedSeries), season, true
 }
 func mapSession(r object) (object, error) {
 	for _, key := range []string{"session_id", "user_id", "media_file_id", "position_seconds", "is_paused", "updated_at"} {

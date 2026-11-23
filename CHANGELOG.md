@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0
+
+- **Breaking:** pass native Silo IDs through for users, libraries, items,
+  media files, and sessions. Earlier releases used prefixed Base64 IDs.
+- Add derived seasons and Jellyfin parent relationships for series and episodes.
+- Add per-user aggregate watch history through `/Users/{id}/Items`.
+- Add Playback Reporting compatibility for Tracearr's historical import.
+- Honor user library access and `IsMissing=false` when serving watch history.
+- Preserve available Silo paths and genres without inventing absent metadata.
+- Move the plugin module, manifest, and build files to the repository root to
+  match the standard Silo plugin layout.
+- Publish under `buzzromain/silo-tracearr-bridge` with plugin ID
+  `community.buzzromain.tracearr-bridge`.
+- Add complete catalog presentation metadata, contributor and security guides,
+  CI checks, and local packaging commands.
+
 ## 0.3.2
 
 - Recognize TV episode playback when Silo reports the parent type `series`,

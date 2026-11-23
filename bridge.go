@@ -24,6 +24,9 @@ import (
 )
 
 type object = map[string]any
+
+// Config holds the native Silo connection, the separate Tracearr credential,
+// and the HTTP listener settings.
 type Config struct {
 	SiloURL   string `json:"silo_url"`
 	SiloKey   string `json:"silo_api_key"`
@@ -32,9 +35,12 @@ type Config struct {
 	Name      string `json:"server_name"`
 }
 
+// defaults returns the local Silo API and listener defaults.
 func defaults() Config {
 	return Config{SiloURL: "http://127.0.0.1:8080", Listen: "0.0.0.0:8098", Name: "Silo (Tracearr bridge)"}
 }
+
+// validate rejects ambiguous URLs and credentials before opening the listener.
 func (c Config) validate() error {
 	u, e := url.Parse(c.SiloURL)
 	if e != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
@@ -84,6 +90,10 @@ type poster struct {
 	mime string
 }
 type Bridge struct {
+	historyMu       sync.Mutex
+	historySnapshot []historyEntry
+	historyExpires  time.Time
+	historyStats    map[string]int
 	sessionMetadata map[string]cachedRows
 	artworkRequests int
 	artworkFailures int
@@ -109,12 +119,16 @@ type Bridge struct {
 	pollFailures    int
 }
 
+// newBridge initializes the HTTP client and bounded in-memory bridge state.
 func newBridge(c Config) *Bridge {
 	return &Bridge{metadataGate: make(chan struct{}, 1), imageFlights: map[string]*imageLoad{}, cfg: c, http: &http.Client{Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, rows: map[string]cachedRows{}, reasons: map[string]pendingReason{}, posters: map[string]*poster{}}
 }
 func newHTTPServer(c Config) *http.Server {
 	return &http.Server{Addr: c.Listen, Handler: newBridge(c), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 35 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 }
+
+// native sends one authenticated request to Silo's native v2 API and validates
+// its JSON response before returning it to the Jellyfin compatibility layer.
 func (b *Bridge) native(ctx context.Context, method, path string, q url.Values, body any, public bool, profile ...string) (object, error) {
 	target := strings.TrimRight(b.cfg.SiloURL, "/") + "/api/v2" + path
 	if len(q) > 0 {
@@ -194,7 +208,11 @@ func (b *Bridge) native(ctx context.Context, method, path string, q url.Values, 
 	return result, nil
 }
 func (b *Bridge) collection(ctx context.Context, path string, paginated bool) ([]object, error) {
-	q := url.Values{}
+	return b.collectionQuery(ctx, path, paginated, url.Values{})
+}
+
+// collectionQuery reads every page and returns no rows if any page fails.
+func (b *Bridge) collectionQuery(ctx context.Context, path string, paginated bool, q url.Values) ([]object, error) {
 	if paginated {
 		q.Set("limit", "200")
 	}
@@ -331,6 +349,9 @@ func respond(w http.ResponseWriter, code int, data any) {
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(data)
 }
+
+// ServeHTTP authenticates Jellyfin-compatible requests and maps supported
+// routes to Silo reads, playback history, artwork, and session controls.
 func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.ToLower(strings.TrimRight(r.URL.Path, "/"))
 	if r.Method != "GET" || (path != "/health/live" && path != "/system/info/public") {
@@ -354,6 +375,8 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				e = fail(400, "cannot read request body")
 			} else if len(raw) > 0 && (json.Unmarshal(raw, &body) != nil || body == nil) {
 				e = fail(400, "expected a JSON object")
+			} else if path == "/user_usage_stats/submit_custom_query" {
+				data, e = b.playbackReporting(ctx, body)
 			} else {
 				data, status, e = b.control(ctx, r.URL.Path, body)
 			}
@@ -483,15 +506,25 @@ func (b *Bridge) get(ctx context.Context, r *http.Request) (any, error) {
 	case "/quickconnect/enabled":
 		return false, nil
 	}
+	segments := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(segments) == 3 && strings.EqualFold(segments[0], "users") && strings.EqualFold(segments[2], "items") {
+		return b.watchHistory(ctx, segments[1], r.URL.Query())
+	}
 	if strings.HasPrefix(path, "/users/") && strings.Count(path, "/") == 2 {
 		rows, e := b.cached(ctx, "/admin/users", true)
 		if e != nil {
 			return nil, e
 		}
-		for _, row := range rows {
-			u := mapUser(row)
-			if str(u["Id"]) == r.URL.Path[len("/Users/"):] {
-				return u, nil
+		segments := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(segments) == 2 {
+			userID, idErr := decodeID("user", segments[1])
+			if idErr != nil {
+				return nil, idErr
+			}
+			for _, row := range rows {
+				if str(row["id"]) == userID {
+					return mapUser(row), nil
+				}
 			}
 		}
 	}
@@ -534,15 +567,23 @@ func (b *Bridge) items(ctx context.Context, input url.Values) (any, error) {
 	if start < 0 || limit < 0 || limit > 10000 {
 		return nil, fail(400, "invalid pagination")
 	}
-	parent := ""
+	parent, parentKind := "", ""
 	if q.Has("parentid") {
-		parent, e = decodeID("library", q.Get("parentid"))
-		if e != nil {
-			return nil, e
+		parent = q.Get("parentid")
+		if _, _, isSeason := seasonParent(parent); isSeason {
+			parentKind = "item"
+		} else {
+			parent, e = decodeID("item", parent)
+			if e != nil {
+				return nil, e
+			}
 		}
 	}
 	ids := map[string]bool{}
 	if q.Has("ids") {
+		if strings.TrimSpace(q.Get("ids")) == "" {
+			return object{"Items": []object{}, "TotalRecordCount": 0, "StartIndex": start}, nil
+		}
 		for _, id := range strings.Split(q.Get("ids"), ",") {
 			native, e := decodeID("item", id)
 			if e != nil {
@@ -550,10 +591,16 @@ func (b *Bridge) items(ctx context.Context, input url.Values) (any, error) {
 			}
 			ids[native] = true
 		}
+		if !q.Has("limit") {
+			if len(ids) > 10000 {
+				return nil, fail(400, "too many item IDs")
+			}
+			limit = len(ids)
+		}
 	}
 	types := q.Get("includeitemtypes")
 	if types == "" {
-		types = "Movie,Series,Episode"
+		types = "Movie,Series,Season,Episode"
 	}
 	typeSet := map[string]bool{}
 	for _, v := range strings.Split(strings.ToLower(types), ",") {
@@ -566,13 +613,48 @@ func (b *Bridge) items(ctx context.Context, input url.Values) (any, error) {
 			return nil, fail(400, "invalid date")
 		}
 	}
+	recursive := true
+	if q.Has("recursive") {
+		switch strings.ToLower(q.Get("recursive")) {
+		case "true":
+			recursive = true
+		case "false":
+			recursive = false
+		default:
+			return nil, fail(400, "invalid Recursive value")
+		}
+	}
+	if q.Get("ismissing") != "" && !strings.EqualFold(q.Get("ismissing"), "true") && !strings.EqualFold(q.Get("ismissing"), "false") {
+		return nil, fail(400, "invalid IsMissing value")
+	}
+	if strings.EqualFold(q.Get("ismissing"), "true") {
+		// Silo's monitoring catalog lists items present in enabled libraries;
+		// it does not contain metadata-only/missing-file records.
+		return object{"Items": []object{}, "TotalRecordCount": 0, "StartIndex": start}, nil
+	}
+	if q.Get("collapseboxsetitems") != "" && !strings.EqualFold(q.Get("collapseboxsetitems"), "true") && !strings.EqualFold(q.Get("collapseboxsetitems"), "false") {
+		return nil, fail(400, "invalid CollapseBoxSetItems value")
+	}
 	rows, e := b.cached(ctx, "/admin/catalog/items", true)
 	if e != nil {
 		return nil, e
 	}
+	rows = append(rows, seasonItems(rows)...)
+	if parent != "" && !strings.HasPrefix(parent, seasonContentIDPrefix) {
+		parentKind = "library"
+		for _, item := range rows {
+			if str(item["content_id"]) == parent || str(item["series_id"]) == parent {
+				parentKind = "item"
+				break
+			}
+		}
+	}
+	if !recursive && (parent == "" || parentKind == "library") {
+		return nil, fail(501, "non-recursive library queries require Silo folder hierarchy")
+	}
 	filtered := []object{}
 	for _, row := range rows {
-		if !typeSet[str(row["type"])] || (len(ids) > 0 && !ids[str(row["content_id"])]) || (parent != "" && !contains(row["library_ids"], parent)) {
+		if !typeSet[str(row["type"])] || (q.Has("ids") && !ids[str(row["content_id"])]) || !matchesItemParent(row, parentKind, parent, recursive) {
 			continue
 		}
 		if !since.IsZero() {
@@ -594,6 +676,8 @@ func (b *Bridge) items(ctx context.Context, input url.Values) (any, error) {
 		key = "added_at"
 	case "sortname", "name":
 		key = "title"
+	case "dateplayed":
+		return nil, fail(400, "DatePlayed sorting is only supported for user watch history")
 	default:
 		return nil, fail(400, "unsupported sort field")
 	}
@@ -732,10 +816,8 @@ func (b *Bridge) loadImage(ctx context.Context, path, tag string) (*poster, erro
 	image := find()
 	if image == nil {
 		var libraryErr error
-		if strings.HasPrefix(id, "item-") {
-			libraryErr = b.libraryPoster(ctx, id)
-			image = find()
-		}
+		libraryErr = b.libraryPoster(ctx, id)
+		image = find()
 		if image == nil {
 			_, sessionErr := b.sessions(ctx)
 			image = find()

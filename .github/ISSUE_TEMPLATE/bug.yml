@@ -1,0 +1,44 @@
+name: Bug report
+description: Report a reproducible Tracearr Bridge problem
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include API keys, tokens, session histories, IP addresses, or other private data.
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      placeholder: 0.4.0
+    validations:
+      required: true
+  - type: input
+    id: silo-version
+    attributes:
+      label: Silo version
+    validations:
+      required: true
+  - type: input
+    id: tracearr-version
+    attributes:
+      label: Tracearr version
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem
+      description: Describe the expected and observed behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Include relevant errors and the plugin diagnostics page with secrets and personal data removed.

@@ -20,7 +20,7 @@ import (
 //go:embed manifest.json
 var manifest []byte
 
-const version = "0.3.2"
+const version = "0.4.0"
 
 type pluginServer struct {
 	v1.UnimplementedHttpRoutesServer
@@ -135,6 +135,13 @@ func (p *pluginServer) status(ctx context.Context) (data map[string]any, err err
 			}
 			data["catalog"] = map[string]any{"scan_running": b.catalogFlight != nil, "last_success_at": timestamp(b.catalogUpdated), "last_error": catalogError, "cached_items": len(b.rows["/admin/catalog/items"].rows)}
 			data["artwork"] = map[string]any{"requests": b.artworkRequests, "failures": b.artworkFailures, "last_error": b.artworkError, "cached_images": len(b.posters), "in_flight": len(b.imageFlights)}
+			if b.historyStats != nil {
+				stats := map[string]any{}
+				for key, value := range b.historyStats {
+					stats[key] = value
+				}
+				data["history_last_scan"] = stats
+			}
 		}
 	}()
 	if err := p.start(); err != nil {

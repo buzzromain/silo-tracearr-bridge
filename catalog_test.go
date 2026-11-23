@@ -2,13 +2,89 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestItemsTracearrBatchWithoutLimit(t *testing.T) {
+	b := newBridge(Config{})
+	rows := make([]object, 200)
+	ids := make([]string, 200)
+	for i := range rows {
+		id := fmt.Sprintf("item-%03d", i)
+		rows[i] = object{"content_id": id, "type": "movie", "title": id}
+		ids[i] = rid("item", id)
+	}
+	b.rows["/admin/catalog/items"] = cachedRows{until: time.Now().Add(time.Minute), rows: rows}
+	q := url.Values{"Ids": {strings.Join(ids, ",")}, "Fields": {"ProductionYear,RunTimeTicks"}}
+	out, err := b.items(context.Background(), q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(out.(object)["Items"].([]object)); got != 200 {
+		t.Fatalf("got %d items, want 200", got)
+	}
+	q.Set("Limit", "10")
+	out, err = b.items(context.Background(), q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(out.(object)["Items"].([]object)); got != 10 {
+		t.Fatalf("explicit limit: got %d", got)
+	}
+}
+
+func TestItemsBuildSeasonsAndHonorParentHierarchy(t *testing.T) {
+	b := newBridge(Config{})
+	rows := []object{
+		{"content_id": "e1", "type": "episode", "title": "One", "series_id": "show", "series_title": "Show", "season_number": float64(1), "episode_number": float64(1), "library_ids": []any{"tv"}},
+		{"content_id": "e2", "type": "episode", "title": "Two", "series_id": "show", "series_title": "Show", "season_number": float64(1), "episode_number": float64(2), "library_ids": []any{"tv"}},
+		{"content_id": "e3", "type": "episode", "title": "Special", "series_id": "show", "series_title": "Show", "season_number": float64(0), "episode_number": float64(1), "library_ids": []any{"tv"}},
+	}
+	b.rows["/admin/catalog/items"] = cachedRows{until: time.Now().Add(time.Minute), rows: rows}
+	query := url.Values{
+		"ParentId":         {rid("library", "tv")},
+		"Recursive":        {"true"},
+		"IncludeItemTypes": {"Episode,Season"},
+	}
+	result, err := b.items(context.Background(), query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := result.(object)["Items"].([]object)
+	if len(items) != 5 {
+		t.Fatalf("library results: got %d items, want 3 episodes and 2 seasons: %v", len(items), items)
+	}
+	seasonID := seasonID("show", 1)
+	query.Set("ParentId", seasonID)
+	query.Set("IncludeItemTypes", "Episode")
+	result, err = b.items(context.Background(), query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items = result.(object)["Items"].([]object)
+	if len(items) != 2 || items[0]["ParentId"] != seasonID || items[1]["ParentId"] != seasonID {
+		t.Fatalf("season children: %v", items)
+	}
+	query.Set("ParentId", rid("item", "show"))
+	query.Set("Recursive", "false")
+	query.Set("IncludeItemTypes", "Season")
+	result, err = b.items(context.Background(), query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items = result.(object)["Items"].([]object)
+	if len(items) != 2 {
+		t.Fatalf("direct series children: %v", items)
+	}
+}
 
 func TestCatalogSharesScanAcrossCancelledAndConcurrentCallers(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})

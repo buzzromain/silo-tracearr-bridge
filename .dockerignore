@@ -1,6 +1,7 @@
-*
-!silo_tracearr/
-!silo_tracearr/*.py
-!Dockerfile
-**/__pycache__
-**/*.pyc
+.git
+.github
+.venv
+dist
+docs
+*.md
+PROMPT_TRACEARR.md

@@ -1,56 +1,68 @@
-# Releases and the standalone plugin repository
+# Releasing
 
-Add this repository URL in **Silo → Administration → Plugins → Repositories**:
+Releases are immutable GitHub assets pinned by tag, version, and SHA-256
+checksum. Silo discovers them through:
 
 ```text
-https://github.com/neilsb/silo-tracearr-bridge/releases/latest/download/repository.json
+https://github.com/buzzromain/silo-tracearr-bridge/releases/latest/download/repository.json
 ```
 
-This is an independently maintained repository, not a listing in Silo's trusted
-community catalog. The same plugin ID, `community.tracearr-bridge`, is retained
-for future distribution changes. Current builds support Linux amd64 only.
+## Before tagging
 
-## Install or update
-
-Refresh Silo's plugin catalog, choose **Tracearr Bridge**, and install the desired
-version. Existing manual installations use the same plugin ID; installing from
-the repository updates that installation rather than creating a second bridge.
-This migration was verified with release 0.3.1, including retained settings and
-the startup/60-second task schedule. Keep the current configuration and Tracearr URL/key. Open the plugin's
-**Tracearr Bridge** diagnostics page from its actions menu to start/check the
-listener after updating.
-
-For first-time setup, publish port 8098 and follow [plugin setup](plugin/README.md).
-Enable the listener task at startup and every 60 seconds. Recovery scheduling is
-a host setting; installing a plugin does not automatically change task triggers.
-
-## Publish a version
-
-1. Update the version in `plugin/main.go` and `plugin/manifest.json` together.
-2. Update `CHANGELOG.md`, run tests, and commit.
-3. Push `main`, create a matching `vMAJOR.MINOR.PATCH` tag, and push that tag.
-4. The release workflow builds and tests the binary, verifies its embedded
-   identity/version/checksum, and publishes the binary, manifest,
-   `repository.json`, and `SHA256SUMS` as GitHub release assets.
-5. Check the latest repository URL and install through Silo's catalog.
-
-The stable repository URL follows GitHub's latest release. Each index pins the
-binary URL to a specific tag and SHA-256 checksum, so an index cannot select a
-different release's binary. Do not overwrite published assets or reuse tags.
-
-Local packaging uses the same steps:
+1. Update the version in `main.go`, `manifest.json`, `README.md`, and
+   `CHANGELOG.md`.
+2. Update route or identifier documentation when compatibility changes.
+3. Confirm that the manifest presentation contains current support and changelog
+   URLs.
+4. Run the full checks:
 
 ```sh
-docker build --platform linux/amd64 --target artifact --output type=local,dest=plugin/dist plugin
-python3 tools/verify_go_bridge.py
-python3 tools/package_release.py --tag v0.3.1
-(cd plugin/dist && sha256sum -c SHA256SUMS)
+make test
+go test -race ./...
+make vet
+git diff --check
 ```
+
+5. Build the release locally:
+
+```sh
+make package TAG=v0.4.0
+sha256sum -c dist/SHA256SUMS
+dist/tracearr-bridge-linux-amd64 manifest
+```
+
+6. Verify that the printed manifest version and checksum match the release
+   binary and tag.
+
+## Publish
+
+1. Commit the release changes.
+2. Push the default branch.
+3. Create and push an annotated `vMAJOR.MINOR.PATCH` tag.
+4. The release workflow reruns tests and vet, builds the static Linux amd64
+   artifact, packages `manifest.json`, `repository.json`, and `SHA256SUMS`, then
+   publishes all four files to the GitHub release.
+5. Refresh the repository in Silo and install from the published catalog.
+
+Do not overwrite release assets or reuse tags. Publish a new patch release for
+fixes.
+
+## Release artifact
+
+The release contains:
+
+- `tracearr-bridge-linux-amd64`
+- `manifest.json` with the binary checksum
+- `repository.json` for Silo's repository catalog
+- `LICENSE` with the original MIT attribution
+- `SHA256SUMS`
+
+Builds currently target Linux amd64 only. Add and test another platform before
+advertising it in `supported_platforms`.
 
 ## Rollback
 
-Download the earlier release's binary and `SHA256SUMS`, verify the binary's
-checksum, and upload it through Silo's plugin administration. Open diagnostics
-or run the listener task afterward. Back up the Silo plugin configuration before
-upgrading; these releases do not migrate or remove settings. The old standalone
-Python bridge remains an optional fallback, not a requirement of the plugin.
+Download the earlier release binary and checksum, verify it, and upload it
+through Silo's plugin administration. Back up plugin configuration before
+changing versions. Identifier changes require special care; read the migration
+notes in the changelog.

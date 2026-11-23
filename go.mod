@@ -1,4 +1,4 @@
-module silo-tracearr-bridge/plugin
+module github.com/buzzromain/silo-tracearr-bridge
 
 go 1.26.0
 
