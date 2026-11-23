@@ -50,6 +50,9 @@ and maps the result into Jellyfin session objects.
 Silo may report TV playback as the parent `series` type. When season and episode
 numbers are present, the plugin maps the session as an episode.
 
+Active audio/track sessions can be mapped when Silo reports them, but music
+libraries and richer music metadata are not part of the synchronized catalog.
+
 ## Watch history
 
 `/Users/{id}/Items?Filters=IsPlayed` groups completed Silo attempts by media
@@ -87,6 +90,9 @@ differ from Silo's actual end time.
 Tracearr applies its own import cutoff and overlap handling. Complete
 cross-source deduplication is not guaranteed. Test imports against a backup or
 an isolated Tracearr instance.
+
+The import has automated coverage but still requires end-to-end validation
+against the operator's Silo and Tracearr versions before relying on it.
 
 ## Caching and resource limits
 

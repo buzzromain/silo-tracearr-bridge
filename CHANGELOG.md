@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Clarify that this fork is a new Silo plugin identity.
+- Document live audio-session behavior separately from unsupported music
+  library synchronization.
+- Surface Playback Reporting end-time and live-validation limits in the main
+  README.
+
 ## 0.4.0
 
 - **Breaking:** pass native Silo IDs through for users, libraries, items,
